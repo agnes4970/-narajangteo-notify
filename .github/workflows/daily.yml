@@ -7,11 +7,13 @@ name: narajangteo-daily-notify
 
 on:
   schedule:
-    # UTC 기준. 0 0 * * * = 매일 00:00 UTC = 09:07 KST
+    # UTC 기준. 7 0 * * * = 매일 00:07 UTC = 09:07 KST
     - cron: '7 0 * * *'
   workflow_dispatch:   # 수동 실행 버튼
 
-# 중복 전송 방지용 data/sent.json 을 워크플로가 다시 커밋해야 하므로 쓰기 권한 필요.
+# PDF 리포트를 저장소(reports/latest_report.pdf)에 커밋 + 푸시하고,
+# 그 링크를 카카오톡으로도 전송하기 위해 쓰기 권한이 필요합니다.
+# (이 링크가 로그인 없이 바로 열리려면 저장소가 Public 이어야 합니다)
 permissions:
   contents: write
 
@@ -26,25 +28,27 @@ jobs:
           python-version: '3.12'
 
       - name: Install deps
-        run: pip install requests
+        run: pip install requests reportlab
+
+      - name: Install Korean font (PDF 리포트용)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-nanum
 
       - name: Run daily notify
         env:
           G2B_API_KEY: ${{ secrets.G2B_API_KEY }}
           KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          KAKAO_REFRESH_TOKEN_2: ${{ secrets.KAKAO_REFRESH_TOKEN_2 }}
         run: python daily_notify.py
 
-      # 이번 실행에서 새로 보낸 공고번호를 data/sent.json 에 기록했다면
-      # 다음 실행이 같은 공고를 중복 전송하지 않도록 리포에 커밋해 둡니다.
-      - name: Commit updated sent.json (dedup 상태 저장)
-        run: |
-          if [ -n "$(git status --porcelain data/sent.json 2>/dev/null)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/sent.json
-            git commit -m "chore: update sent.json [skip ci]"
-            git push
-          else
-            echo "sent.json 변경 없음 → 커밋 생략"
-          fi
+      # daily_notify.py 가 실행 도중 reports/latest_report.pdf 를 직접 git commit/push 합니다
+      # (카카오 링크 메시지가 정확한 최신 버전을 가리키도록, 메시지 전송 전에 먼저 커밋함).
+      # 아래는 그와 별개로 Actions 화면에서도 다운로드할 수 있게 Artifact 로 남겨두는 용도입니다.
+      - name: Upload PDF report (있을 때만)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bid-report-${{ github.run_number }}
+          path: reports/latest_report.pdf
+          if-no-files-found: ignore
+          retention-days: 30
