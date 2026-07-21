@@ -13,7 +13,8 @@ GitHub Actions(daily.yml)에서 매일 실행되는 것을 전제로 함.
      → 같은 공고라도 마감일이 지나기 전까지는 매일 반복해서 알림이 갑니다.
   5) 조회된 공고 전체를 정리한 PDF 리포트를 reports/latest_report.pdf 로 저장하고,
      (GitHub Actions 환경이면) 저장소에 자동 커밋 + 푸시합니다.
-  6) 푸시가 성공하면, 그 커밋의 raw.githubusercontent.com 링크를 담은 카카오톡 메시지를
+  6) 푸시가 성공하면, 그 커밋 시점의 GitHub 파일 보기(HTML) 페이지 링크를 담은
+     카카오톡 메시지를
      ("PDF 리포트 보기" 버튼) 각 수신자에게 1건 추가로 전송합니다.
      ※ 이 링크가 열리려면 저장소가 Public(공개) 이어야 합니다 — Private 이면 로그인 없이는
        링크가 안 열려서, 이 경우 PDF 링크 메시지는 건너뛰고 로그만 남깁니다.
@@ -245,7 +246,10 @@ def commit_and_push_pdf():
         sha = _run_git(["rev-parse", "HEAD"]).stdout.strip()
         if not sha:
             return None
-        url = f"https://raw.githubusercontent.com/{repo}/{sha}/{PDF_REL_PATH}"
+        # raw.githubusercontent.com (파일 원본 그대로) 링크는 카카오톡 인앱 브라우저에서
+        # 미리보기가 안 돼 탭해도 반응이 없는 경우가 있어, GitHub 파일 보기(HTML) 페이지로 연결.
+        # 이 페이지 안에 PDF 뷰어가 내장되어 바로 보이고, 다운로드도 그 화면에서 가능함.
+        url = f"https://github.com/{repo}/blob/{sha}/{PDF_REL_PATH}"
         print(f"PDF 링크 생성: {url}")
         return url
     except Exception as e:
