@@ -13,7 +13,7 @@
 | 1 | 공공데이터포털 API 키 발급 | ✅ 완료 |
 | 2~3 | 조회 + 필터 스크립트 (`narajangteo_check.py`) | ✅ 완료·검증 |
 | 4 | 카카오 '나에게 보내기' 토큰 발급 도구 (`kakao_token.py`) | 🔶 도구 준비됨, 실제 발급/전송 확인 필요 |
-| 5 | 필터 결과 → 카톡 전송 + 중복 알림 방지 (`daily_notify.py`) | ✅ 로직 완성(단위 테스트 통과) · 실제 카카오 전송은 미검증 |
+| 5 | 필터 결과 → 카톡 전송 + 마감일까지 반복 알림 + PDF 리포트 (`daily_notify.py`) | ✅ 로직 완성(단위 테스트 통과) · 실제 카카오 전송은 미검증 |
 | 6 | GitHub Actions 매일 자동 실행 (`daily.yml`) | ✅ 초안 완성(상태파일 자동 커밋 포함) · 실제 Actions 실행 미검증 |
 
 ---
@@ -23,9 +23,11 @@
 ```
 narajangteo_check.py            핵심: 조회 + 필터 (검증 완료). 단독 실행/테스트 가능
 kakao_token.py                  카카오 토큰 1회 발급 + 테스트 전송
-daily_notify.py                 필터 결과를 카톡으로 전송 (refresh_token 사용) + 중복 알림 방지
-data/sent.json                  이미 보낸 공고번호 기록 (최초엔 빈 객체 {} 로 커밋)
-.github/workflows/daily.yml     매일 자동 실행 워크플로 (실행 후 data/sent.json 자동 커밋)
+daily_notify.py                 필터 결과를 카톡으로 전송 (refresh_token 사용) + 마감일 전까지 반복 알림
+                                 + 조회된 공고 전체를 정리한 PDF 리포트 생성 후 저장소에 커밋
+                                 + PDF 링크를 카카오톡으로도 전송
+reports/latest_report.pdf       매일 갱신되는 PDF 리포트 (daily_notify.py 가 자동 커밋)
+.github/workflows/daily.yml     매일 자동 실행 워크플로 (실행 후 PDF 를 Artifact 로도 업로드)
 README.md                       이 문서
 ```
 
@@ -149,31 +151,59 @@ python narajangteo_check.py --selftest # API 없이 필터 로직만 점검
 
 ## 8. 다음 단계 B — 매일 자동 실행 (Step 6, GitHub Actions)
 
-1. 리포지토리에 `narajangteo_check.py`, `daily_notify.py`, `data/sent.json`(빈 `{}` 로 최초 커밋),
-   `.github/workflows/daily.yml` 커밋.
-2. Settings > Secrets and variables > Actions 에 Secret 3개 등록:
+1. 리포지토리에 `narajangteo_check.py`, `daily_notify.py`, `.github/workflows/daily.yml` 커밋.
+2. Settings > Secrets and variables > Actions 에 Secret 등록:
    `G2B_API_KEY`, `KAKAO_REST_API_KEY`, `KAKAO_REFRESH_TOKEN`
-3. `daily.yml` 의 cron 은 `0 0 * * *`(UTC) = **매일 09:00 KST**. 필요 시 조정.
+   (2번째 수신자를 추가하려면 `KAKAO_REFRESH_TOKEN_2` 도 등록 — 3번째부터는 `_3`, `_4` ... 계속 추가 가능)
+3. `daily.yml` 의 cron 은 `7 0 * * *`(UTC) = **매일 09:07 KST**.
+   (정각·5분 단위처럼 딱 떨어지는 시각은 GitHub Actions 스케줄 실행이 몰려서 지연되기 쉬워
+   애매한 분(20분)으로 설정해 혼잡을 피함. 그래도 GitHub 특성상 몇 분 오차는 있을 수 있음)
 4. Actions 탭에서 수동 실행(workflow_dispatch)으로 먼저 테스트.
-   (워크플로가 `data/sent.json` 을 자동 커밋하므로 `permissions: contents: write` 가
-   설정돼 있는지 확인 — 리포 Settings > Actions > General > Workflow permissions 에서
-   "Read and write permissions" 이 켜져 있어야 push 가 성공합니다.)
 
-### 중복 알림 방지 (완료)
-- `daily_notify.py` 가 `data/sent.json` 에 이미 보낸 공고번호(`bidNtceNo-bidNtceOrd`)를
-  기록하고, 다음 실행부터는 그 목록에 없는 것만 전송합니다.
-- 전송 성공한 건만 기록하므로, 카카오 API 에러 등으로 실패한 건은 다음 실행에 자동 재시도됩니다.
-- 45일 지난 기록은 자동 정리되어 파일이 무한정 커지지 않습니다(마감 지난 공고가 다시 뜰 일은 없음).
-- 워크플로 마지막 단계에서 `data/sent.json` 변경분을 리포에 커밋/푸시합니다.
+### 마감일까지 반복 알림 (완료)
+- **더 이상 "이미 보낸 공고는 재전송 안 함(dedup)" 로직을 쓰지 않습니다.**
+- 매 실행마다 `narajangteo_check.collect()` 가 반환하는 공고(= 아직 마감 전인 공고)를
+  **전부** 전송합니다. 즉 같은 공고라도 마감일이 지나기 전까지는 매일 반복해서 알림이 갑니다.
+- 마감일이 지나면 `narajangteo_check.py` 의 `deadline_ok()` 가 자동으로 걸러내므로,
+  별도 상태 저장 파일(`data/sent.json`) 없이도 마감된 공고는 알림 대상에서 빠집니다.
+- 공고 식별은 공고번호(`bidNtceNo-bidNtceOrd`) 기준입니다.
+- **주의**: 나라장터 API 특성상 "최근 14일 이내 게시된 공고"만 조회됩니다. 따라서 마감일이
+  게시일로부터 14일 이내인 공고는 마감일까지 매일 반복 알림이 가지만, 그보다 훨씬 뒤에
+  마감되는(드문 경우) 공고는 게시 14일 후부터 조회 대상에서 빠지면서 알림이 멈출 수 있습니다.
+
+### 마감까지 남은 일수(D-day) 표시
+- 카카오톡 메시지에 `마감: 2026-07-24 10:00 (D-3)` 처럼 D-day 가 함께 표시됩니다.
+- 당일 마감인 공고는 `(오늘 마감(D-DAY))` 로 표시됩니다.
+
+### PDF 리포트 + 카카오톡 링크 전송 (신규)
+- 매 실행마다 조회된 공고 전체(마감 전인 것만)를 정리한 PDF 1개 파일을 생성합니다.
+  마감 임박 순으로 정렬되고, 공고명·기관·지역·마감일·D-day 가 표 형태로 정리됩니다.
+- 이 PDF는 저장소의 `reports/latest_report.pdf` 로 **자동 커밋 + 푸시**됩니다
+  (매일 같은 경로를 덮어씀 — 과거 버전은 git 커밋 히스토리로 남습니다).
+- 커밋이 성공하면, 그 커밋 시점 그대로의 PDF를 가리키는 `raw.githubusercontent.com`
+  링크를 만들어 **카카오톡 메시지로도 전송**합니다 ("PDF 리포트 보기" 버튼).
+  → 이 링크가 로그인 없이 바로 열리려면 **저장소가 Public(공개)** 이어야 합니다.
+    Private 상태면 링크 전송은 자동으로 건너뛰고 로그만 남습니다.
+- GitHub Actions 실행 결과 화면(Actions 탭 > 해당 실행 > Artifacts)에서도 별도로
+  다운로드 가능합니다 (30일 보관, 참고/백업용).
+- PDF 생성에는 `reportlab` 패키지와 한글 폰트(나눔고딕)가 필요합니다.
+  `daily.yml` 에 `pip install reportlab`, `apt-get install -y fonts-nanum` 단계가 이미 포함돼 있습니다.
+  (로컬에서 실행할 때는 커밋/푸시 및 카카오 링크 전송 단계를 자동으로 건너뛰고
+  PDF 파일만 생성합니다 — `GITHUB_ACTIONS` 환경변수로 CI 환경 여부를 판별)
+
+### 여러 명에게 전송
+- `KAKAO_REFRESH_TOKEN`, `KAKAO_REFRESH_TOKEN_2`, `KAKAO_REFRESH_TOKEN_3` ... 이름으로
+  Secret 을 등록한 만큼, 등록된 모든 사람에게 각각 카카오톡이 전송됩니다.
+- 각 수신자는 본인 카카오 계정으로 `kakao_token.py` 를 한 번 실행해서 본인 refresh_token 을
+  발급받아야 합니다 (REST API 키는 공용 — 앱을 여러 개 만들 필요 없음).
 
 ### 남은 구현 포인트
 - **refresh_token 자동 갱신**: 카카오 응답에 새 refresh_token 이 오면(만료 임박 시)
   현재는 로그 경고만 출력합니다. Secret 자체를 자동 갱신하려면 별도 PAT +
   GitHub REST API(`PUT /repos/{owner}/{repo}/actions/secrets/{name}`, libsodium 암호화 필요)
   연동이 필요 — 필요하면 다음 단계로 추가 가능합니다.
-- 공고가 여러 건일 때 메시지 분할/묶음 전송 정책 결정(현재 1건당 1메시지).
 - **실제 카카오톡 전송 검증**: `kakao_token.py` 로 최초 토큰 발급 + 테스트 메시지 수신 확인,
-  이어서 `daily_notify.py` 를 로컬에서 한 번 실행해 실제 전송/`sent.json` 갱신을 확인 권장.
+  이어서 `daily_notify.py` 를 로컬에서 한 번 실행해 실제 전송/PDF 생성을 확인 권장.
 
 ---
 
